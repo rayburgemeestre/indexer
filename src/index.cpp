@@ -1,3 +1,8 @@
+/*
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this
+  file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
 // g++ --std=c++14 % -o a.out && ./a.out
 // export LD_LIBRARY_PATH=/usr/local/lib64/:$LD_LIBRARY_PATH; g++ --std=c++14 % -o a.out && ./a.out
 #include <vector>
@@ -9,7 +14,27 @@
 #include <sstream>
 #include <chrono>
 #include <cstdlib>
+#include <thread>
 //#include <execution>
+
+#include "crow.h"
+
+#pragma once
+
+class webserver
+{
+public:
+    template <typename T>
+    webserver(T start_webserver) : webserver_(start_webserver) {}
+
+    ~webserver()
+    {
+        webserver_.join();
+    }
+
+    std::thread webserver_;
+};
+
 using namespace std;
 
 class node
@@ -101,7 +126,7 @@ int main(int argc, char *argv[])
     for (string line; getline(input, line);) {
         nodes.emplace_back(line);
         counter++;
-        if (counter == 10000) break; // just for testing
+        //if (counter == 10000) break; // just for testing
     }
     input.close();
     cout << "lines read: " << counter << endl;
@@ -121,6 +146,71 @@ int main(int argc, char *argv[])
         counter++;
     }
     cout << "elapsed seconds: " << s3.stop() << endl;
+
+    webserver ws([&]() -> void {
+        crow::App<> app;
+
+        CROW_ROUTE(app, "/")
+        ([&]{
+            using namespace std;
+            ifstream ifile("index.html", ios::binary);
+            string s( (istreambuf_iterator<char>(ifile)),
+                      (istreambuf_iterator<char>()) );
+            return s;
+        });
+
+        CROW_ROUTE(app, "/find")
+            .methods("POST"_method)
+        ([&](const crow::request &req) {
+            ostringstream ss;
+            auto iter = basenames.find(req.body);
+            if (iter == basenames.end()) {
+                ss << "Nothing found. Try using 'match'...\n";
+            } else {
+                vector<string> results;
+                for (; iter!=basenames.begin(); iter++) {
+                    const auto &node = nodes[iter->second];
+                    if (node.basename() != req.body) {
+                        break;
+                    }
+                    results.emplace_back(node.file());
+                }
+                sort(results.begin(), results.end());
+                for (const auto &result : results) {
+                    ss << result << endl;
+                }
+            }
+            return crow::response{ss.str()};
+        });
+
+        CROW_ROUTE(app, "/match")
+            .methods("POST"_method)
+        ([&](const crow::request &req) {
+            ostringstream ss;
+            bool only_folders = false;//command == "matchdir";
+            size_t counter = 0;
+            ss << "matching " << req.body << endl;
+            for (const auto &node : nodes) {
+                if (node.basename().find(req.body) != string::npos) {
+                    if (only_folders && node.filetype() != 'd')
+                        continue;
+                    ss << node.file() << endl;
+                    counter++;
+                    if (counter >= 100) {
+                        ss << "Enough matches, cancelling..\n";
+                        break;
+                    }
+                }
+            }
+            return crow::response{ss.str()};
+        });
+
+        //crow::logger::setLogLevel(crow::LogLevel::DEBUG);
+
+        app.port(8888)
+            .multithreaded()
+            .run();
+    });
 
     cout << "Type folder name:" << endl;
     for (string line; getline(cin, line);) {

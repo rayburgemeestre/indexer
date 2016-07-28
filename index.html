@@ -1,0 +1,18 @@
+<html>
+
+<input type="text" id="input" />
+
+<pre id="results">
+</pre>
+<script>
+document.getElementById('input').onkeyup = function () {
+    var r = new XMLHttpRequest();
+    r.open("POST", "/match", true);
+    r.onreadystatechange = function () {
+        if (r.readyState != 4 || r.status != 200) return;
+        document.getElementById('results').innerHTML = r.responseText;
+    };
+    r.send(this.value);
+}
+</script>
+</html>
