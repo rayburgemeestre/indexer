@@ -1,18 +1,28 @@
 <html>
 
-<input type="text" id="input" />
+Find exact match: <br/>
+<input data-type="find" type="text" id="input" /> <br/>
+
+Find partial match: <br/>
+<input data-type="match" type="text" id="input2" /> <br/>
 
 <pre id="results">
 </pre>
-<script>
-document.getElementById('input').onkeyup = function () {
+
+<script type="text/javascript">
+function keyup() {
     var r = new XMLHttpRequest();
-    r.open("POST", "/match", true);
+    r.open("POST", "/" + this.getAttribute('data-type'), true);
     r.onreadystatechange = function () {
         if (r.readyState != 4 || r.status != 200) return;
         document.getElementById('results').innerHTML = r.responseText;
     };
     r.send(this.value);
-}
+};
+var o = document.getElementById('input'),
+    p = document.getElementById('input2');
+o.onkeyup = keyup.bind(o);
+p.onkeyup = keyup.bind(p);
 </script>
+
 </html>
