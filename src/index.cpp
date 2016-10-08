@@ -8,6 +8,7 @@
 #include <vector>
 #include <unordered_map>
 #include <algorithm>
+#include <functional>
 #include <iostream>
 #include <fstream>
 #include <regex>
@@ -46,6 +47,9 @@ private:
     mutable uint64_t inode_;
     mutable char filetype_;
     mutable string date_;
+    mutable vector<const node *> children_;
+    mutable size_t my_hash_;
+    mutable size_t cum_kilobyte_;
 
 public:
     node(const string &file) : file_(file)
@@ -86,6 +90,11 @@ public:
     const string &basename() const { return basename_; }
     const char &filetype() const { return filetype_; }
     const string &date() const { return date_; }
+    vector<const node *> & children() const { return children_; }
+    const size_t &my_hash() const { return my_hash_; }
+    void set_hash(size_t hash) const { my_hash_ = hash; };
+    const size_t &cum_kilobyte() const { return cum_kilobyte_; }
+    void set_cum_kilobyte(size_t kb) const { cum_kilobyte_ = kb; };
 };
 
 inline bool operator<(const node &lhs, const node &rhs) {
@@ -110,6 +119,25 @@ public:
     }
 };
 
+hash<string> hash_fn;
+
+void recurse(set<size_t> &hashes, unordered_multimap<size_t, const node *> &hash_to_node, const node &n) {
+    size_t my_hash = hash_fn(n.basename() + to_string(n.kilobyte()) + n.filetype());
+    size_t my_cum_kb = n.kilobyte();
+    for (const node *child : n.children()) {
+        recurse(hashes, hash_to_node, *child);
+        my_hash = my_hash ^ child->my_hash();
+        my_cum_kb += child->kilobyte();
+    }
+    n.set_hash(my_hash);
+    n.set_cum_kilobyte(my_cum_kb);
+    hash_to_node.insert({my_hash, &n});
+    hashes.insert(my_hash);
+    return;
+}
+
+#include "md5.h"
+
 int main(int argc, char *argv[])
 {
     if (argc < 2) {
@@ -118,6 +146,10 @@ int main(int argc, char *argv[])
 
     vector<node> nodes;
     unordered_multimap<string, size_t> basenames;
+    unordered_multimap<string, size_t> fullnames;
+    unordered_multimap<size_t, const node *> hash_to_node;
+    set<size_t> hashes;
+    vector<pair<size_t, const node *>> nodes_by_size;
 
     cout << "reading index file... ";
     timer s;
@@ -126,7 +158,7 @@ int main(int argc, char *argv[])
     for (string line; getline(input, line);) {
         nodes.emplace_back(line);
         counter++;
-        //if (counter == 10000) break; // just for testing
+        if (counter == 1000) break; // just for testing
     }
     input.close();
     cout << "lines read: " << counter << endl;
@@ -138,14 +170,75 @@ int main(int argc, char *argv[])
     sort(nodes.begin(), nodes.end());
     cout << "elapsed seconds: " << s2.stop() << endl;
     
-    cout << "creating lookup tables..\n";
+    cout << "creating lookup tables and tree structure..\n";
     timer s3;
     counter = 0;
+    basenames.reserve(nodes.size());
+    fullnames.reserve(nodes.size());
+    nodes_by_size.reserve(nodes.size());
     for (const auto &node : nodes) {
         basenames.insert({node.basename(), counter});
         counter++;
     }
+    for (const auto &node : nodes) {
+        nodes_by_size.push_back(make_pair(node.kilobyte(), &node));
+    }
+    counter = 0;
+    for (const auto &node : nodes) {
+        if (node.file() == "/mnt2/NAS/projects/codec_projects/projects/AutoTrack-ServerMonitoring/configs/nagvis") {
+            cout << "Ik insert 'm toch echt..." << endl;
+        }
+        fullnames.insert({node.file(), counter});
+        counter++;
+    }
+    node root("root");
+    for (const auto &node : nodes) {
+        // hash input: cout << "node = " << node.kilobyte() << node.file() << node.filetype() << endl;
+        auto &me = node;
+        auto parent = node.file().substr(0, node.file().length() - node.basename().length() - 1);
+        auto iter = fullnames.find(parent);
+        if (iter == fullnames.end()) {
+            cout << "Found root node: " << parent << endl;
+            root.children().push_back(&node);
+        } else {
+            const auto &myparent = nodes[iter->second];
+            myparent.children().push_back(&node);
+        }
+        counter++;
+    }
+    cout << "root got childs: " << root.children().size() << endl;
     cout << "elapsed seconds: " << s3.stop() << endl;
+
+    cout << "creating hashes recursively..\n";
+    timer s5;
+    recurse(hashes, hash_to_node, root);
+    cout << "elapsed seconds: " << s5.stop() << endl;
+
+    cout << "processing..\n";
+    timer s6;
+    for (const size_t &hash : hashes) {
+        const auto c = hash_to_node.count(hash);
+        if (c >= 2) {
+            auto range = hash_to_node.equal_range(hash);
+            if (range.first->second->filetype() == 'd' && range.first->second->cum_kilobyte() >= (1024 * 1024 /* 1 GiB */)) {
+                cout << "hash " << hash << " occurs " << c << " times..." << endl;
+                for_each(range.first, range.second, [](auto &p) {
+                    cout << " to be specific: " << p.second->file() << endl;
+                });
+            }
+        }
+    }
+    cout << "elapsed seconds: " << s6.stop() << endl;
+
+    cout << "sorting lookup tables..\n";
+    timer s4;
+    std::sort(nodes_by_size.begin(), nodes_by_size.end(), [](const auto &p1, const auto &p2) {
+        if (p1.first == p2.first) {
+           return p1.second->basename() < p2.second->basename();
+        }
+        return p1.first > p2.first;
+    });
+    cout << "elapsed seconds: " << s4.stop() << endl;
 
     webserver ws([&]() -> void {
         crow::App<> app;
@@ -213,6 +306,7 @@ int main(int argc, char *argv[])
     });
 
     cout << "Type folder name:" << endl;
+    MD5 md5;
     for (string line; getline(cin, line);) {
 
         if (line.find(" ") == string::npos) {
@@ -221,6 +315,7 @@ int main(int argc, char *argv[])
             cout << "  i.e. find foo (find basename exactly matching foo)\n";
             cout << "  i.e. match foo (find basename containing foo)\n";
             cout << "  i.e. matchdir foo (find folders containing foo)\n";
+            cout << "  i.e. by size (display largest file(s) ordered by size DESC))\n";
             cout << "Type folder name:" << endl;
             continue;
         }
@@ -260,6 +355,27 @@ int main(int argc, char *argv[])
                         cout << "Enough matches, cancelling..\n";
                         break;
                     }
+                }
+            }
+        }
+        else if (command == "by" /* by size ;'-) */) {
+            size_t counter = 0;
+            cout << "matching " << line << endl;
+            for (const auto &p : nodes_by_size) {
+                const auto & KiB = p.first;
+                const auto & node = *p.second;
+                cout << "match: " << (node.kilobyte() / 1024) << "MiB " << node.file() << endl;
+                counter++;
+                if (counter >= 100) {
+                    cout << "Enough matches, cancelling..\n";
+                    break;
+                }
+            }
+        }
+        else if (command == "calc" /* md5 */) {
+            for (const auto &node : nodes) {
+                if (node.filetype() != 'd') {
+                    cout << md5.digestFile( (char *)node.file().c_str() )  << endl;
                 }
             }
         }
