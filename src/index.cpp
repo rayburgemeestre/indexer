@@ -22,11 +22,13 @@
 
 #pragma once
 
+class indexer;
 class webserver
 {
 public:
     template <typename T>
-    webserver(T start_webserver) : webserver_(start_webserver) {}
+    webserver(indexer &indexer_, T start_webserver)
+      : indexer_(indexer_), webserver_(start_webserver) {}
 
     ~webserver()
     {
@@ -34,6 +36,7 @@ public:
     }
 
     std::thread webserver_;
+    indexer &indexer_;
 };
 
 using namespace std;
@@ -138,12 +141,9 @@ void recurse(set<size_t> &hashes, unordered_multimap<size_t, const node *> &hash
 
 #include "md5.h"
 
-int main(int argc, char *argv[])
+class indexer
 {
-    if (argc < 2) {
-        cerr << "Usage " << argv[0] << " <index>" << endl;
-    }
-
+public: // too lazy right now to make getters
     vector<node> nodes;
     unordered_multimap<string, size_t> basenames;
     unordered_multimap<string, size_t> fullnames;
@@ -151,28 +151,56 @@ int main(int argc, char *argv[])
     set<size_t> hashes;
     vector<pair<size_t, const node *>> nodes_by_size;
 
+    std::string filename_;
+    node root;
+public:
+    indexer(std::string filename);
+
+    void run();
+
+private:
+    void read_nodes_and_sort();
+    void create_lookup_tables_and_sort();
+    void create_tree_structure();
+    void create_hashes_on_tree();
+};
+
+indexer::indexer(std::string filename) : filename_(filename), root("root") {
+
+}
+
+void indexer::run() {
+    read_nodes_and_sort();
+    create_lookup_tables_and_sort();
+    create_tree_structure();
+    create_hashes_on_tree();
+}
+
+void indexer::read_nodes_and_sort() {
     cout << "reading index file... ";
     timer s;
-    ifstream input(argv[1]);
+    ifstream input(filename_);
     size_t counter = 0;
     for (string line; getline(input, line);) {
         nodes.emplace_back(line);
         counter++;
-        if (counter == 1000) break; // just for testing
+        //if (counter == 1000) break; // just for testing
     }
     input.close();
     cout << "lines read: " << counter << endl;
     cout << "elapsed seconds: " << s.stop() << endl;
-
     cout << "sorting files in memory..\n";
     timer s2;
     //sort(execution::par, nodes.begin(), nodes.end());
     sort(nodes.begin(), nodes.end());
     cout << "elapsed seconds: " << s2.stop() << endl;
-    
-    cout << "creating lookup tables and tree structure..\n";
+}
+
+void indexer::create_lookup_tables_and_sort()
+{
+    cout << "creating lookup tables..\n";
     timer s3;
-    counter = 0;
+    size_t counter = 0;
     basenames.reserve(nodes.size());
     fullnames.reserve(nodes.size());
     nodes_by_size.reserve(nodes.size());
@@ -185,12 +213,10 @@ int main(int argc, char *argv[])
     }
     counter = 0;
     for (const auto &node : nodes) {
-        if (node.file() == "/mnt2/NAS/projects/codec_projects/projects/AutoTrack-ServerMonitoring/configs/nagvis") {
-            cout << "Ik insert 'm toch echt..." << endl;
-        }
         fullnames.insert({node.file(), counter});
         counter++;
     }
+    /*
     node root("root");
     for (const auto &node : nodes) {
         // hash input: cout << "node = " << node.kilobyte() << node.file() << node.filetype() << endl;
@@ -207,28 +233,9 @@ int main(int argc, char *argv[])
         counter++;
     }
     cout << "root got childs: " << root.children().size() << endl;
+     */
     cout << "elapsed seconds: " << s3.stop() << endl;
 
-    cout << "creating hashes recursively..\n";
-    timer s5;
-    recurse(hashes, hash_to_node, root);
-    cout << "elapsed seconds: " << s5.stop() << endl;
-
-    cout << "processing..\n";
-    timer s6;
-    for (const size_t &hash : hashes) {
-        const auto c = hash_to_node.count(hash);
-        if (c >= 2) {
-            auto range = hash_to_node.equal_range(hash);
-            if (range.first->second->filetype() == 'd' && range.first->second->cum_kilobyte() >= (1024 * 1024 /* 1 GiB */)) {
-                cout << "hash " << hash << " occurs " << c << " times..." << endl;
-                for_each(range.first, range.second, [](auto &p) {
-                    cout << " to be specific: " << p.second->file() << endl;
-                });
-            }
-        }
-    }
-    cout << "elapsed seconds: " << s6.stop() << endl;
 
     cout << "sorting lookup tables..\n";
     timer s4;
@@ -239,16 +246,73 @@ int main(int argc, char *argv[])
         return p1.first > p2.first;
     });
     cout << "elapsed seconds: " << s4.stop() << endl;
+}
 
-    webserver ws([&]() -> void {
+void indexer::create_tree_structure()
+{
+    cout << "creating tree structure..\n";
+    timer s3;
+    size_t counter = 0;
+    for (const auto &node : nodes) {
+        // hash input: cout << "node = " << node.kilobyte() << node.file() << node.filetype() << endl;
+        auto &me = node;
+        auto parent = node.file().substr(0, node.file().length() - node.basename().length() - 1);
+        auto iter = fullnames.find(parent);
+        if (iter == fullnames.end()) {
+            cout << "Found root node: " << parent << endl;
+            root.children().push_back(&node);
+        } else {
+            const auto &myparent = nodes[iter->second];
+            myparent.children().push_back(&node);
+        }
+        counter++;
+    }
+    cout << "root got childs: " << root.children().size() << endl;
+    cout << "elapsed seconds: " << s3.stop() << endl;
+}
+
+void indexer::create_hashes_on_tree()
+{
+    cout << "creating hashes recursively..\n";
+    timer s5;
+    recurse(hashes, hash_to_node, root);
+    cout << "elapsed seconds: " << s5.stop() << endl;
+}
+
+int main(int argc, char *argv[])
+{
+    if (argc < 2) {
+        cerr << "Usage " << argv[0] << " <index>" << endl;
+    }
+
+    indexer indexer_(argv[1]);
+    indexer_.run();
+
+    cout << "listing all duplicate folders > 1GiB..\n";
+    timer s6;
+    for (const size_t &hash : indexer_.hashes) {
+        const auto c = indexer_.hash_to_node.count(hash);
+        if (c < 2) {
+            continue;
+        }
+        auto range = indexer_.hash_to_node.equal_range(hash);
+        if (range.first->second->filetype() == 'd' && range.first->second->cum_kilobyte() >= (1024 * 1024 /* 1 GiB */)) {
+            cout << "hash " << hash << " occurs " << c << " times..." << endl;
+            for_each(range.first, range.second, [](auto &p) {
+                cout << " to be specific: " << p.second->file() << endl;
+            });
+        }
+    }
+    cout << "elapsed seconds: " << s6.stop() << endl;
+
+    webserver ws(indexer_, [&]() -> void {
         crow::App<> app;
 
         CROW_ROUTE(app, "/")
         ([&]{
-            using namespace std;
-            ifstream ifile("index.html", ios::binary);
-            string s( (istreambuf_iterator<char>(ifile)),
-                      (istreambuf_iterator<char>()) );
+            std::ifstream ifile("index.html", ios::binary);
+            std::string s( (std::istreambuf_iterator<char>(ifile)),
+                           (std::istreambuf_iterator<char>()) );
             return s;
         });
 
@@ -256,13 +320,13 @@ int main(int argc, char *argv[])
             .methods("POST"_method)
         ([&](const crow::request &req) {
             ostringstream ss;
-            auto iter = basenames.find(req.body);
-            if (iter == basenames.end()) {
+            auto iter = indexer_.basenames.find(req.body);
+            if (iter == indexer_.basenames.end()) {
                 ss << "Nothing found. Try using 'match'...\n";
             } else {
                 vector<string> results;
-                for (; iter!=basenames.begin(); iter++) {
-                    const auto &node = nodes[iter->second];
+                for (; iter!=indexer_.basenames.begin(); iter++) {
+                    const auto &node = indexer_.nodes[iter->second];
                     if (node.basename() != req.body) {
                         break;
                     }
@@ -283,7 +347,7 @@ int main(int argc, char *argv[])
             bool only_folders = false;//command == "matchdir";
             size_t counter = 0;
             ss << "matching " << req.body << endl;
-            for (const auto &node : nodes) {
+            for (const auto &node : indexer_.nodes) {
                 if (node.basename().find(req.body) != string::npos) {
                     if (only_folders && node.filetype() != 'd')
                         continue;
@@ -298,6 +362,56 @@ int main(int argc, char *argv[])
             return crow::response{ss.str()};
         });
 
+        CROW_ROUTE(app, "/dupes")
+            .methods("POST"_method)
+        ([&](const crow::request &req) {
+            ostringstream ss;
+            bool only_folders = true;
+            size_t counter = 0;
+            timer s6;
+            for (const size_t &hash : indexer_.hashes) {
+                const auto c = indexer_.hash_to_node.count(hash);
+                if (c < 2) {
+                    continue;
+                }
+                auto range = indexer_.hash_to_node.equal_range(hash);
+                if (range.first->second->filetype() == 'd' && range.first->second->cum_kilobyte() >= (std::stoi(req.body)) * 1024) {
+                    ss << "hash " << hash << " occurs " << c << " times..." << endl;
+                    for_each(range.first, range.second, [&ss, &range](auto &p) {
+                        ss << "  - " << p.second->file() << " (" << (range.first->second->cum_kilobyte() / 1024) << " MiB)" << endl;
+                    });
+                    counter++;
+                    if (counter >= 100) {
+                        ss << "Enough matches, cancelling..\n";
+                        break;
+                    }
+                }
+            }
+            cout << "listing all duplicate folders > 1GiB..\n";
+            cout << "elapsed seconds: " << s6.stop() << endl;
+            return crow::response{ss.str()};
+        });
+
+        CROW_ROUTE(app, "/by_size")
+            .methods("POST"_method)
+        ([&](const crow::request &req) {
+            ostringstream ss;
+            size_t counter = 0;
+            timer s6;
+            for (const auto &p : indexer_.nodes_by_size) {
+                const auto & KiB = p.first;
+                const auto & node = *p.second;
+                ss << "match: " << (node.kilobyte() / 1024) << "MiB " << node.file() << endl;
+                counter++;
+                if (counter >= 100) {
+                    cout << "Enough matches, cancelling..\n";
+                    break;
+                }
+            }
+            cout << "elapsed seconds: " << s6.stop() << endl;
+            return crow::response{ss.str()};
+        });
+
         //crow::logger::setLogLevel(crow::LogLevel::DEBUG);
 
         app.port(8888)
@@ -305,82 +419,88 @@ int main(int argc, char *argv[])
             .run();
     });
 
-    cout << "Type folder name:" << endl;
-    MD5 md5;
-    for (string line; getline(cin, line);) {
 
-        if (line.find(" ") == string::npos) {
-            for (size_t i=0; i< 256; i++) { cout << "\n"; }
-            cout << "Usage: <command> <param>\n";
-            cout << "  i.e. find foo (find basename exactly matching foo)\n";
-            cout << "  i.e. match foo (find basename containing foo)\n";
-            cout << "  i.e. matchdir foo (find folders containing foo)\n";
-            cout << "  i.e. by size (display largest file(s) ordered by size DESC))\n";
-            cout << "Type folder name:" << endl;
-            continue;
-        }
-        auto command = line.substr(0, line.find(" "));
-        line = line.substr(line.find(" ") + 1);
+#if 1 == 2
 
-        if (command == "find") {
-            auto iter = basenames.find(line);
-            if (iter == basenames.end()) {
-                cout << "Nothing found. Try using 'match'...\n";
-            } else {
-                vector<string> results;
-                for (; iter!=basenames.begin(); iter++) {
-                    const auto &node = nodes[iter->second];
-                    if (node.basename() != line) {
-                        break;
-                    }
-                    results.emplace_back(node.file());
-                }
-                sort(results.begin(), results.end());
-                for (const auto &result : results) {
-                    cout << result << endl;
-                }
-            }
-        }
-        else if (command == "match" || command == "matchdir") {
-            bool only_folders = command == "matchdir";
-            size_t counter = 0;
-            cout << "matching " << line << endl;
-            for (const auto &node : nodes) {
-                if (node.basename().find(line) != string::npos) {
-                    if (only_folders && node.filetype() != 'd')
-                        continue;
-                    cout << "match: " << node.file() << endl;
-                    counter++;
-                    if (counter >= 100) {
-                        cout << "Enough matches, cancelling..\n";
-                        break;
-                    }
-                }
-            }
-        }
-        else if (command == "by" /* by size ;'-) */) {
-            size_t counter = 0;
-            cout << "matching " << line << endl;
-            for (const auto &p : nodes_by_size) {
-                const auto & KiB = p.first;
-                const auto & node = *p.second;
-                cout << "match: " << (node.kilobyte() / 1024) << "MiB " << node.file() << endl;
-                counter++;
-                if (counter >= 100) {
-                    cout << "Enough matches, cancelling..\n";
-                    break;
-                }
-            }
-        }
-        else if (command == "calc" /* md5 */) {
-            for (const auto &node : nodes) {
-                if (node.filetype() != 'd') {
-                    cout << md5.digestFile( (char *)node.file().c_str() )  << endl;
-                }
-            }
-        }
-        cout << "Type folder name:" << endl;
-    }
+
+//    cout << "Type folder name:" << endl;
+//    MD5 md5;
+//    for (string line; getline(cin, line);) {
+//
+//        if (line.find(" ") == string::npos) {
+//            for (size_t i=0; i< 256; i++) { cout << "\n"; }
+//            cout << "Usage: <command> <param>\n";
+//            cout << "  i.e. find foo (find basename exactly matching foo)\n";
+//            cout << "  i.e. match foo (find basename containing foo)\n";
+//            cout << "  i.e. matchdir foo (find folders containing foo)\n";
+//            cout << "  i.e. by size (display largest file(s) ordered by size DESC))\n";
+//            cout << "Type folder name:" << endl;
+//            continue;
+//        }
+//        auto command = line.substr(0, line.find(" "));
+//        line = line.substr(line.find(" ") + 1);
+//
+//        if (command == "find") {
+//            auto iter = basenames.find(line);
+//            if (iter == basenames.end()) {
+//                cout << "Nothing found. Try using 'match'...\n";
+//            } else {
+//                vector<string> results;
+//                for (; iter!=basenames.begin(); iter++) {
+//                    const auto &node = nodes[iter->second];
+//                    if (node.basename() != line) {
+//                        break;
+//                    }
+//                    results.emplace_back(node.file());
+//                }
+//                sort(results.begin(), results.end());
+//                for (const auto &result : results) {
+//                    cout << result << endl;
+//                }
+//            }
+//        }
+//        else if (command == "match" || command == "matchdir") {
+//            bool only_folders = command == "matchdir";
+//            size_t counter = 0;
+//            cout << "matching " << line << endl;
+//            for (const auto &node : nodes) {
+//                if (node.basename().find(line) != string::npos) {
+//                    if (only_folders && node.filetype() != 'd')
+//                        continue;
+//                    cout << "match: " << node.file() << endl;
+//                    counter++;
+//                    if (counter >= 100) {
+//                        cout << "Enough matches, cancelling..\n";
+//                        break;
+//                    }
+//                }
+//            }
+//        }
+//        else if (command == "by" /* by size ;'-) */) {
+//            size_t counter = 0;
+//            cout << "matching " << line << endl;
+//            for (const auto &p : nodes_by_size) {
+//                const auto & KiB = p.first;
+//                const auto & node = *p.second;
+//                cout << "match: " << (node.kilobyte() / 1024) << "MiB " << node.file() << endl;
+//                counter++;
+//                if (counter >= 100) {
+//                    cout << "Enough matches, cancelling..\n";
+//                    break;
+//                }
+//            }
+//        }
+//        else if (command == "calc" /* md5 */) {
+//            for (const auto &node : nodes) {
+//                if (node.filetype() != 'd') {
+//                    cout << md5.digestFile( (char *)node.file().c_str() )  << endl;
+//                }
+//            }
+//        }
+//        cout << "Type folder name:" << endl;
+//    }
+
+#endif
 
     cout << "Freeing memory..\n";
     return 0;

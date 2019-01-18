@@ -6,6 +6,12 @@ Find exact match: <br/>
 Find partial match: <br/>
 <input data-type="match" type="text" id="input2" /> <br/>
 
+Find duplicates with minimal size in MiB: <br/>
+<input data-type="dupes" type="text" id="input3" /> <br/>
+
+Find by size: <br/>
+<input data-type="by_size" type="text" id="input4" /> <br/>
+
 <pre id="results">
 </pre>
 
@@ -20,9 +26,13 @@ function keyup() {
     r.send(this.value);
 };
 var o = document.getElementById('input'),
-    p = document.getElementById('input2');
+    p = document.getElementById('input2'),
+    q = document.getElementById('input3');
+    r = document.getElementById('input4');
 o.onkeyup = keyup.bind(o);
 p.onkeyup = keyup.bind(p);
+q.onkeyup = keyup.bind(q);
+r.onkeyup = keyup.bind(r);
 </script>
 
 </html>
