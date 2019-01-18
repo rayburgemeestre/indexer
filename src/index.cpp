@@ -1,10 +1,8 @@
 /*
-  This Source Code Form is subject to the terms of the Mozilla Public
-  License, v. 2.0. If a copy of the MPL was not distributed with this
-  file, You can obtain one at http://mozilla.org/MPL/2.0/.
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
-// g++ --std=c++14 % -o a.out && ./a.out
-// export LD_LIBRARY_PATH=/usr/local/lib64/:$LD_LIBRARY_PATH; g++ --std=c++14 % -o a.out && ./a.out
 #include <vector>
 #include <unordered_map>
 #include <algorithm>
@@ -16,7 +14,9 @@
 #include <chrono>
 #include <cstdlib>
 #include <thread>
-//#include <execution>
+
+#include <boost/algorithm/string/classification.hpp> // Include boost::for is_any_of
+#include <boost/algorithm/string/split.hpp> // Include for boost::split
 
 #include "crow.h"
 
@@ -28,7 +28,7 @@ class webserver
 public:
     template <typename T>
     webserver(indexer &indexer_, T start_webserver)
-      : indexer_(indexer_), webserver_(start_webserver) {}
+      : webserver_(start_webserver), indexer_(indexer_) {}
 
     ~webserver()
     {
@@ -55,7 +55,7 @@ private:
     mutable size_t cum_kilobyte_;
 
 public:
-    node(const string &file) : file_(file)
+    explicit node(const string& file) : file_(file)
     {
         size_t poslast = file_.find_last_of("/");
         if (poslast != string::npos) {
@@ -64,23 +64,23 @@ public:
 
         // regex was too slow
         size_t pos = 0;
-        size_t pos2 = file_.find("\t");
-        if (pos != string::npos) {
-            kilobyte_ = atoll(file.substr(pos, pos2).c_str());
+        size_t pos2 = file_.find('\t');
+        if (pos2 != string::npos) {
+            kilobyte_ = static_cast<size_t>(atoll(file.substr(pos, pos2).c_str()));
         }
         pos += pos2 + 1;
-        pos2 = file_.substr(pos).find("\t");
-        if (pos != string::npos) {
-            inode_ = atoll(file.substr(pos, pos2).c_str());
+        pos2 = file_.substr(pos).find('\t');
+        if (pos2 != string::npos) {
+            inode_ = static_cast<uint64_t>(atoll(file.substr(pos, pos2).c_str()));
         }
         pos += pos2 + 1;
-        pos2 = file_.substr(pos).find("\t");
-        if (pos != string::npos) {
+        pos2 = file_.substr(pos).find('\t');
+        if (pos2 != string::npos) {
             date_ = file.substr(pos, pos2);
         }
         pos += pos2 + 1;
-        pos2 = file_.substr(pos).find("\t");
-        if (pos != string::npos) {
+        pos2 = file_.substr(pos).find('\t');
+        if (pos2 != string::npos) {
             filetype_ = file.substr(pos, 1)[0];
         }
 
@@ -89,6 +89,9 @@ public:
     }
     const size_t &kilobyte() const { return kilobyte_; }
     const uint64_t &inode() const { return inode_; }
+    const string parent_file() const {
+        return file().substr(0, file().length() - basename().length() - 1);
+    }
     const string &file() const { return file_; }
     const string &basename() const { return basename_; }
     const char &filetype() const { return filetype_; }
@@ -136,7 +139,6 @@ void recurse(set<size_t> &hashes, unordered_multimap<size_t, const node *> &hash
     n.set_cum_kilobyte(my_cum_kb);
     hash_to_node.insert({my_hash, &n});
     hashes.insert(my_hash);
-    return;
 }
 
 #include "md5.h"
@@ -154,7 +156,7 @@ public: // too lazy right now to make getters
     std::string filename_;
     node root;
 public:
-    indexer(std::string filename);
+    explicit indexer(std::string filename);
 
     void run();
 
@@ -165,15 +167,17 @@ private:
     void create_hashes_on_tree();
 };
 
-indexer::indexer(std::string filename) : filename_(filename), root("root") {
+indexer::indexer(std::string filename) : filename_(std::move(filename)), root("root") {
 
 }
 
 void indexer::run() {
     read_nodes_and_sort();
     create_lookup_tables_and_sort();
+    /*
     create_tree_structure();
     create_hashes_on_tree();
+     */
 }
 
 void indexer::read_nodes_and_sort() {
@@ -209,7 +213,7 @@ void indexer::create_lookup_tables_and_sort()
         counter++;
     }
     for (const auto &node : nodes) {
-        nodes_by_size.push_back(make_pair(node.kilobyte(), &node));
+        nodes_by_size.emplace_back(node.kilobyte(), &node);
     }
     counter = 0;
     for (const auto &node : nodes) {
@@ -221,7 +225,7 @@ void indexer::create_lookup_tables_and_sort()
     for (const auto &node : nodes) {
         // hash input: cout << "node = " << node.kilobyte() << node.file() << node.filetype() << endl;
         auto &me = node;
-        auto parent = node.file().substr(0, node.file().length() - node.basename().length() - 1);
+        auto parent = node.parent_file()
         auto iter = fullnames.find(parent);
         if (iter == fullnames.end()) {
             cout << "Found root node: " << parent << endl;
@@ -255,11 +259,10 @@ void indexer::create_tree_structure()
     size_t counter = 0;
     for (const auto &node : nodes) {
         // hash input: cout << "node = " << node.kilobyte() << node.file() << node.filetype() << endl;
-        auto &me = node;
-        auto parent = node.file().substr(0, node.file().length() - node.basename().length() - 1);
+        auto parent = node.parent_file();
         auto iter = fullnames.find(parent);
         if (iter == fullnames.end()) {
-            cout << "Found root node: " << parent << endl;
+            cout << "Found root node: " << parent << " - " << node.file() << endl;
             root.children().push_back(&node);
         } else {
             const auto &myparent = nodes[iter->second];
@@ -319,22 +322,45 @@ int main(int argc, char *argv[])
         CROW_ROUTE(app, "/find")
             .methods("POST"_method)
         ([&](const crow::request &req) {
+            std::vector<std::string> body;
+            boost::split(body, req.body, boost::is_any_of("\r\n "), boost::token_compress_on);
             ostringstream ss;
-            auto iter = indexer_.basenames.find(req.body);
-            if (iter == indexer_.basenames.end()) {
-                ss << "Nothing found. Try using 'match'...\n";
-            } else {
-                vector<string> results;
-                for (; iter!=indexer_.basenames.begin(); iter++) {
-                    const auto &node = indexer_.nodes[iter->second];
-                    if (node.basename() != req.body) {
-                        break;
+            ss << "<table class=\"sortable\"><thead><tr><th>Type</th><th>File</th><th>Date</th></tr></thead><tbody>";
+            if (body.size() > 1) {
+                size_t max_results = std::stoll(body[1]);
+                auto iter = indexer_.basenames.find(body[0]);
+                if (iter == indexer_.basenames.end()) {
+                   // ss << "Nothing found. Try using 'match'...\n";
+                } else {
+                    vector<node> results;
+                    size_t counter = 0;
+                    for (; iter != indexer_.basenames.begin(); iter++) {
+                        if (indexer_.nodes.size() <= iter->second) {
+                            std::cout << "SOMETHING WENT WRONG WITH FINDING: " << iter->first << std::endl;
+                            break;
+                        }
+                        const auto node = indexer_.nodes[iter->second]; // no ref?
+
+                        if (node.basename() != body[0]) {
+                            break;
+                        }
+                        for (size_t i = 2; i < body.size(); i++) {
+                            if (node.basename().find(body[i]) != std::string::npos) {
+                                break; // skip this one
+                            }
+                        }
+                        results.emplace_back(node);
+                        counter++;
+                        if (counter >= max_results) {
+                            //ss << "Enough matches, cancelling..\n";
+                            break;
+                        }
                     }
-                    results.emplace_back(node.file());
-                }
-                sort(results.begin(), results.end());
-                for (const auto &result : results) {
-                    ss << result << endl;
+                    sort(results.begin(), results.end());
+                    for (const auto &result : results) {
+                        ss << "<tr><td>" << result.filetype() << "</td><td>" << result.file() << "</td><td>" << result.date() << "</td></tr>" << endl;
+                    }
+                    ss << "</tbody></tr></table>";
                 }
             }
             return crow::response{ss.str()};
@@ -343,21 +369,45 @@ int main(int argc, char *argv[])
         CROW_ROUTE(app, "/match")
             .methods("POST"_method)
         ([&](const crow::request &req) {
+            std::vector<std::string> body;
+            boost::split(body, req.body, boost::is_any_of("\r\n "), boost::token_compress_on);
             ostringstream ss;
-            bool only_folders = false;//command == "matchdir";
-            size_t counter = 0;
-            ss << "matching " << req.body << endl;
-            for (const auto &node : indexer_.nodes) {
-                if (node.basename().find(req.body) != string::npos) {
-                    if (only_folders && node.filetype() != 'd')
-                        continue;
-                    ss << node.file() << endl;
-                    counter++;
-                    if (counter >= 100) {
-                        ss << "Enough matches, cancelling..\n";
-                        break;
+            if (body.size() > 1) {
+                size_t max_results = std::stoll(body[1]);
+
+                bool only_folders = false;//command == "matchdir";
+                size_t counter = 0;
+                //  ss << "matching " << req.body << endl;
+                ss << "<table class=\"sortable\"><thead><tr><th>Type</th><th>File</th><th>Date</th></tr></thead><tbody>";
+                for (const auto &node : indexer_.nodes) {
+                    if (node.basename().find(body[0]) != string::npos) {
+                        if (only_folders && node.filetype() != 'd')
+                            continue;
+
+                        if ([&]() {
+                            for (size_t i = 2; i < body.size(); i++) {
+                                if (body[i].empty()) {
+                                    continue;
+                                }
+                                if (node.file().find(body[i]) != std::string::npos) {
+                                    return true; // skip this one
+                                }
+                            }
+                            return false;
+                        }()) {
+                            continue; // skip
+                        }
+
+
+                        ss << "<tr><td>" << node.filetype() << "</td><td>" << node.file() << "</td><td>" << node.date() << "</td></tr>" << endl;
+                        counter++;
+                        if (counter >= max_results) {
+                            //ss << "Enough matches, cancelling..\n";
+                            break;
+                        }
                     }
                 }
+                ss << "</tbody></tr></table>";
             }
             return crow::response{ss.str()};
         });
