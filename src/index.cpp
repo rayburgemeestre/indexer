@@ -174,10 +174,8 @@ indexer::indexer(std::string filename) : filename_(std::move(filename)), root("r
 void indexer::run() {
     read_nodes_and_sort();
     create_lookup_tables_and_sort();
-    /*
     create_tree_structure();
     create_hashes_on_tree();
-     */
 }
 
 void indexer::read_nodes_and_sort() {
@@ -335,6 +333,9 @@ int main(int argc, char *argv[])
                     vector<node> results;
                     size_t counter = 0;
                     for (; iter != indexer_.basenames.begin(); iter++) {
+                        if (iter == indexer_.basenames.end()) {
+                            break;
+                        }
                         if (indexer_.nodes.size() <= iter->second) {
                             std::cout << "SOMETHING WENT WRONG WITH FINDING: " << iter->first << std::endl;
                             break;
